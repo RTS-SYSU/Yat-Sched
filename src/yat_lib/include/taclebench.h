@@ -1,0 +1,7 @@
+#include "task_binarysearch.h"
+#include "task_bsort.h"
+#include "task_countnegative.h"
+#include "task_fft.h"
+#include "task_gemm.h"
+#include "task_insertsort.h"
+#include "task_minver.h"

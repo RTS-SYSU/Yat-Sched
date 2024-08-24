@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+
+from __future__ import division
+
+import numpy
+
+import optparse
+import sys
+import os
+
+from math import ceil
+
+from os.path import splitext
+
+import itertools as it
+
+def decode_key_value_filename(name):
+    "Map key=value_otherkey=other-value names to proper dictionary."
+    params = {}
+    parts = name.split('_')
+    for p in parts:
+        kv = p.split('=')
+        k = kv[0]
+        v = kv[1] if len(kv) > 1 else None
+        params[k] = v
+    return params
+
+def print_cols(cols, first_row_prefix='# ', other_rows_prefix='  '):
+    col_widths = [max((len(str(x)) for x in col)) for col in cols]
+
+    prefs = it.chain([first_row_prefix], it.repeat(other_rows_prefix))
+
+    for prefix, row in it.izip(prefs, range(0, max((len(c) for c in cols)))):
+        reached_end = True
+        data = [col[row] if row < len(col) else '' for col in cols]
+        print('%s%s' % (prefix,
+                        ", ".join([' ' * (c - len(str(f))) + str(f)
+                                   for (c, f) in it.izip(col_widths, data)])))
+
+
+def print_rows(rows, first_row_prefix='# ', other_rows_prefix='  '):
+    col = 0
+    col_widths = []
+    field_widths = True
+    while field_widths:
+        field_widths = [len(str(row[col])) for row in rows if len(row) > col]
+        if field_widths:
+            col_widths.append(max(field_widths))
+        col += 1
+
+    prefs = it.chain([first_row_prefix], it.repeat(other_rows_prefix))
+
+    for prefix, row in it.izip(prefs, rows):
+        print('%s%s' % (prefix,
+                        ", ".join([' ' * (c - len(str(f))) + str(f)
+                                   for (c, f) in it.izip(col_widths, row)])))
+
+
+
+def stats_for_file(fname, scale):
+    n    = 0
+    max  = 0
+    p95  = 0
+    p99  = 0
+    p999 = 0
+    min  = 0
+    med  = 0
+    avg  = 0
+    std  = 0
+    var  = 0
+
+    size = os.stat(fname).st_size
+    if size:
+        samples = numpy.memmap(fname, dtype='float32', mode='c')
+
+        n = len(samples)
+        if n > 0:
+            samples *= scale
+            max  = numpy.amax(samples)
+            p95  = numpy.percentile(samples, 95.0)
+            p99  = numpy.percentile(samples, 99.0)
+            p999 = numpy.percentile(samples, 99.9)
+            med  = numpy.median(samples)
+            avg  = numpy.mean(samples)
+            min  = numpy.amin(samples)
+
+            std = numpy.std(samples, ddof=1)
+            var = numpy.var(samples)
+
+    return [n, max, p999, p99, p95, avg, med, min, std, var]
+
+o = optparse.make_option
+
+opts = [
+    o('-p', '--cycles-per-usec', action='store', dest='cycles', type='float',
+      help='how many cycles per usec'),
+    o(None, '--hist', action='store_true', dest='want_hist',
+      help='generate a histogram'),
+    o('-b', '--bin-size', action='store', dest='bin_size', type='float',
+      help='size of each bin in histogram'),
+    o('-n', '--normalize-counts', action='store_true', dest='normalize',
+      help='give relative frequency, not absolute sample counts'),
+    o('-c', '--cumulative', action='store_true', dest='cumulative',
+      help='report cumulative counts (i.e., CDF)'),
+    o(None, '--percentiles', action='store_true', dest='want_percentiles',
+      help='produce table of percentiles'),
+    o('-r', '--resolution', action='store', dest='resolution', type='float',
+      help='set resolution of percentiles table'),
+    o(None, '--percent', action='store_true', dest='want_percent',
+      help='give relative frequency as a percentage'),
+]
+
+defaults = {
+    'cycles'    : None,
+    'want_hist' : False,
+    'bin_size'  : 1000,
+    'normalize' : False,
+    'want_percent' : False,
+    'cumulative' : False,
+    'want_percentiles' : False,
+    'resolution' : 0.1,
+}
+
+options = None
+
+def to_str(x):
+    if type(x) == str:
+        return x
+    if type(x) == int:
+        return "%d" % x
+    else:
+        return "%.5f" % x
+
+STATS_HEADERS = [
+    "Plugin", "#cores", "Overhead", 'Unit', 'Scale', "#tasks",
+    "#samples",
+    "max", "99.9th perc.", "99th perc.", "95th perc.",
+    "avg", "med", "min", "std", "var",
+    "file"
+]
+
+def get_stats(fname):
+    name, ext = splitext(fname)
+    conf = decode_key_value_filename(name)
+
+    if 'overhead' in conf and conf['overhead'].rfind('-LATENCY') != -1:
+        # latency is stored in nanoseconds, not cycles
+        scale = 1 / 1000 # convert from nanoseconds
+        unit = 'microseconds'
+        scale_desc = '1/1000.00'
+    elif options.cycles is None:
+        scale = 1
+        unit = 'cycles'
+        scale_desc = '1'
+    else:
+        # convert from cycles to usec
+        scale = 1 / options.cycles
+        unit = 'microseconds'
+        scale_desc = '1/%.2f' % options.cycles
+
+    stats = stats_for_file(fname, scale)
+    if 'locks' in conf:
+        sched = '%s_locks=%s' % (conf['scheduler'], conf['locks'])
+    elif 'scheduler' in conf:
+        sched = conf['scheduler']
+    else:
+        sched = 'UNKNOWN'
+
+    ohead = conf['overhead'] if 'overhead' in conf else 'UNKNOWN'
+    n = conf['n'] if 'n' in conf else '*'
+    m = conf['m'] if 'm' in conf else '*'
+
+    info = [sched, m, ohead, unit, scale_desc, n]
+    finfo = [fname]
+    return [to_str(x) for x in  info + stats + finfo]
+
+def make_bins(max_val):
+    num_bins = int(ceil(max_val / options.bin_size)) + 1
+    return [x * options.bin_size for x in range(0, num_bins)]
+
+def iter_percentiles(resolution):
+    percentile = 0.0
+    while percentile < 100:
+        yield percentile
+        percentile += resolution
+    yield 100.0
+
+def make_percentiles(resolution):
+    return list(iter_percentiles(resolution))
+
+def hist_file(fname, scale):
+    max_val = 0
+    hist = []
+
+    size = os.stat(fname).st_size
+    if size:
+        samples = numpy.memmap(fname, dtype='float32', mode='c')
+
+        n = len(samples)
+        if n > 0:
+            samples *= scale
+            max_val = numpy.amax(samples)
+            bins = make_bins(max_val)
+            hist, _ = numpy.histogram(samples, bins)
+            if options.cumulative:
+                hist = numpy.cumsum(hist)
+            if options.normalize:
+                hist = [h/n * (100 if options.want_percent else 1) for h in hist]
+
+    return (max_val, hist)
+
+
+def percentiles_file(fname, percentiles):
+    percs = []
+
+    size = os.stat(fname).st_size
+    if size:
+        samples = numpy.memmap(fname, dtype='float32', mode='c')
+
+        n = len(samples)
+        if n > 0:
+            percs = numpy.percentile(samples, percentiles)
+
+    return percs
+
+
+if __name__ == '__main__':
+    # FIXME: would be nicer with argparse
+    parser = optparse.OptionParser(option_list=opts)
+    parser.set_defaults(**defaults)
+    (options, files) = parser.parse_args()
+
+    try:
+        if options.want_hist:
+            cols = []
+            max_val = 0
+            col_names = []
+            for i, f in enumerate(files):
+                try:
+                    (max_in_file, hist) = hist_file(f, 1)
+                    cols.append([i + 1] + [to_str(x) for x in hist])
+                    max_val = max(max_val, max_in_file)
+                    col_names.append(f)
+                except IOError as msg:
+                    print >> sys.stderr, msg
+            bins = ['Bin'] + make_bins(max_val)
+            print_cols([bins] + cols)
+            print('# Columns:')
+            for i, f in enumerate(col_names):
+                print('# (%d) %s' % (i + 1, f))
+        elif options.want_percentiles:
+            cols = []
+            percentiles = make_percentiles(options.resolution)
+            col_names = []
+            for i, f in enumerate(files):
+                try:
+                    percs = percentiles_file(f, percentiles)
+                    cols.append([i + 1] + [to_str(x) for x in percs])
+                    col_names.append(f)
+                except IOError as msg:
+                    print >> sys.stderr, msg
+            perc = ['Percentile'] + [to_str(x) for x in percentiles]
+            print_cols([perc] + cols)
+            print('# Columns:')
+            for i, f in enumerate(col_names):
+                print('# (%d) %s' % (i + 1, f))
+        else:
+            rows = []
+            rows.append(STATS_HEADERS)
+            for f in files:
+                try:
+                    rows.append(get_stats(f))
+                except IOError as msg:
+                    print >> sys.stderr, msg
+            print_rows(rows)
+    except KeyboardInterrupt:
+        pass

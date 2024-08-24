@@ -1,0 +1,13 @@
+#!/bin/sh
+#
+# showsched: show the currently active plugin and exit.
+
+ADIR=/proc/yat/active_plugin
+
+if [ -e $ADIR ]; then
+    cat $ADIR
+else
+    KERN=`uname -s -r`
+    echo "Error: YAT^RT not found on $KERN!"
+    exit 1
+fi

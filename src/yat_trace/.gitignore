@@ -1,0 +1,14 @@
+.sconsign.dblite
+*.o
+*.d
+*.pyc
+*.pdf
+*.bin
+~*
+*~
+ftcat
+ft2csv
+ftdump
+ftsort
+st-dump
+st-job-stats
